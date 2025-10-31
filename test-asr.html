@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>腾讯ASR测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        #result {
+            min-height: 100px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>腾讯ASR功能测试</h1>
+    
+    <div class="test-section">
+        <h3>1. SDK加载检查</h3>
+        <button onclick="checkSDKs()" class="btn-primary">检查SDK状态</button>
+        <div id="sdk-status" class="status"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>2. ASR配置</h3>
+        <label>App ID:</label>
+        <input type="text" id="appId" placeholder="请输入腾讯云ASR App ID">
+        
+        <label>Secret ID:</label>
+        <input type="text" id="secretId" placeholder="请输入Secret ID">
+        
+        <label>Secret Key:</label>
+        <input type="text" id="secretKey" placeholder="请输入Secret Key">
+        
+        <button onclick="testSignature()" class="btn-primary">测试签名生成</button>
+        <div id="signature-status" class="status"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>3. 语音识别测试</h3>
+        <button onclick="startASR()" class="btn-success" id="asr-btn">开始语音识别</button>
+        <button onclick="stopASR()" class="btn-danger" id="stop-btn" disabled>停止识别</button>
+        
+        <div id="asr-status" class="status"></div>
+        <div id="result"></div>
+    </div>
+
+    <!-- 加载必要的SDK -->
+    <script src="/cryptojs.js"></script>
+    <script src="/speechrecognizer.js"></script>
+    
+    <script>
+        let asrInstance = null;
+        let isListening = false;
+        
+        function checkSDKs() {
+            const statusDiv = document.getElementById('sdk-status');
+            const missingSDKs = [];
+            
+            if (!window.CryptoJSTest) {
+                missingSDKs.push('CryptoJS');
+            }
+            
+            if (!window.WebAudioSpeechRecognizer) {
+                missingSDKs.push('WebAudioSpeechRecognizer');
+            }
+            
+            if (missingSDKs.length > 0) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '缺少SDK: ' + missingSDKs.join(', ');
+            } else {
+                statusDiv.className = 'status success';
+                statusDiv.textContent = '所有SDK已正确加载';
+            }
+        }
+        
+        function testSignature() {
+            const appId = document.getElementById('appId').value;
+            const secretId = document.getElementById('secretId').value;
+            const secretKey = document.getElementById('secretKey').value;
+            const statusDiv = document.getElementById('signature-status');
+            
+            if (!appId || !secretId || !secretKey) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '请填写完整的ASR配置信息';
+                return;
+            }
+            
+            try {
+                // 测试签名生成
+                const testStr = 'test_string';
+                const hash = window.CryptoJSTest.HmacSHA1(testStr, secretKey);
+                const bytes = Uint8ArrayToString(toUint8Array(hash));
+                const signature = window.btoa(bytes);
+                
+                statusDiv.className = 'status success';
+                statusDiv.textContent = '签名生成成功: ' + signature.substring(0, 20) + '...';
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '签名生成失败: ' + error.message;
+            }
+        }
+        
+        function startASR() {
+            const appId = document.getElementById('appId').value;
+            const secretId = document.getElementById('secretId').value;
+            const secretKey = document.getElementById('secretKey').value;
+            const statusDiv = document.getElementById('asr-status');
+            const resultDiv = document.getElementById('result');
+            
+            if (!appId || !secretId || !secretKey) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '请先填写ASR配置信息';
+                return;
+            }
+            
+            if (isListening) {
+                statusDiv.className = 'status info';
+                statusDiv.textContent = '语音识别已在进行中';
+                return;
+            }
+            
+            try {
+                const config = {
+                    appid: appId,
+                    secretid: secretId,
+                    secretkey: secretKey,
+                    engine_model_type: '16k_zh',
+                    voice_format: 1,
+                    filter_dirty: 1,
+                    filter_modal: 1,
+                    filter_punc: 1,
+                    convert_num_mode: 1,
+                    word_info: 2,
+                    needvad: 1,
+                    vad_silence_time: 300,
+                    signCallback: function(signStr) {
+                        const hash = window.CryptoJSTest.HmacSHA1(signStr, secretKey);
+                        const bytes = Uint8ArrayToString(toUint8Array(hash));
+                        return window.btoa(bytes);
+                    }
+                };
+                
+                asrInstance = new window.WebAudioSpeechRecognizer(config);
+                
+                // 设置事件监听
+                asrInstance.OnRecognitionStart = (res) => {
+                    console.log('识别开始:', res);
+                    statusDiv.className = 'status info';
+                    statusDiv.textContent = '语音识别已开始，请说话...';
+                };
+                
+                asrInstance.OnSentenceBegin = (res) => {
+                    console.log('句子开始:', res);
+                    resultDiv.textContent = '';
+                };
+                
+                asrInstance.OnRecognitionResultChange = (res) => {
+                    const text = res.result?.voice_text_str;
+                    if (text) {
+                        resultDiv.textContent = text;
+                        console.log('识别中:', text);
+                    }
+                };
+                
+                asrInstance.OnSentenceEnd = (res) => {
+                    const text = res.result?.voice_text_str;
+                    console.log('句子结束:', text);
+                    if (text) {
+                        resultDiv.textContent = text;
+                        statusDiv.className = 'status success';
+                        statusDiv.textContent = '识别完成: ' + text;
+                    }
+                };
+                
+                asrInstance.OnRecognitionComplete = (res) => {
+                    console.log('识别完成:', res);
+                    isListening = false;
+                    document.getElementById('asr-btn').disabled = false;
+                    document.getElementById('stop-btn').disabled = true;
+                };
+                
+                asrInstance.OnError = (res) => {
+                    console.error('识别错误:', res);
+                    statusDiv.className = 'status error';
+                    statusDiv.textContent = '识别错误: ' + JSON.stringify(res);
+                    isListening = false;
+                    document.getElementById('asr-btn').disabled = false;
+                    document.getElementById('stop-btn').disabled = true;
+                };
+                
+                // 开始识别
+                asrInstance.start();
+                isListening = true;
+                document.getElementById('asr-btn').disabled = true;
+                document.getElementById('stop-btn').disabled = false;
+                
+            } catch (error) {
+                console.error('启动ASR失败:', error);
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '启动ASR失败: ' + error.message;
+            }
+        }
+        
+        function stopASR() {
+            if (asrInstance) {
+                asrInstance.stop();
+                asrInstance = null;
+            }
+            isListening = false;
+            document.getElementById('asr-btn').disabled = false;
+            document.getElementById('stop-btn').disabled = true;
+            
+            const statusDiv = document.getElementById('asr-status');
+            statusDiv.className = 'status info';
+            statusDiv.textContent = '语音识别已停止';
+        }
+        
+        // 工具函数
+        function toUint8Array(wordArray) {
+            const words = wordArray.words;
+            const sigBytes = wordArray.sigBytes;
+            const u8 = new Uint8Array(sigBytes);
+            for (let i = 0; i < sigBytes; i++) {
+                u8[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+            }
+            return u8;
+        }
+        
+        function Uint8ArrayToString(fileData) {
+            let dataString = '';
+            for (let i = 0; i < fileData.length; i++) {
+                dataString += String.fromCharCode(fileData[i]);
+            }
+            return dataString;
+        }
+        
+        // 页面加载完成后自动检查SDK
+        window.addEventListener('load', () => {
+            setTimeout(checkSDKs, 100);
+        });
+    </script>
+</body>
+</html>

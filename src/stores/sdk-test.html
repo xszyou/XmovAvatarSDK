@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>星云 sdk-1.0.4 测试页</title>
+  <script src="https://public-xmov.oss-cn-hangzhou.aliyuncs.com/starcloud/sdk/ttsa.min.1.0.4.js"></script>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    .container {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      justify-content: space-between;
+      padding: 20px;
+      gap: 20px;
+      box-sizing: border-box;
+    }
+
+    #ttsa {
+      border: 1px solid #000;
+      flex: 3;
+      height: 100%;
+    }
+
+    .operation {
+      display: flex;
+      flex: 2;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btns {
+      display: none;
+      /* display: flex; */
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    textarea,
+    input,
+    select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .stream-inputs {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      gap: 10px;
+    }
+
+    .account-config {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div id="ttsa"></div>
+    <div class="operation">
+      <div class="account-config">
+        <input type="text" value="https://test-open.xmov.ai/api" id="server_url" placeholder="输入 服务地址">
+        <input type="text" id="username" placeholder="输入 用户名">
+        <input type="text" id="app_id" placeholder="输入 App ID">
+        <input type="text" id="app_secret" placeholder="输入 App Secret">
+        <input type="text" value="星云测试" id="tag" placeholder="输入 tag">
+        <label style="display: flex;font-size: 14px;">
+          <span style="flex-shrink: 0;">强制抢占房间 need_refresh</span>
+          <input type="checkbox" id="need_refresh" style="width: max-content;">
+        </label>
+        <button onclick="connect()">连接房间 connect</button>
+      </div>
+      <div id="actionButtons" class="btns">
+        <div style="margin-top: 16px;font-size: 14px;display: flex;flex-direction: column;gap: 8px;">
+          <div style="text-align: center;">流式/非流式文本可选参数</div>
+          <div style="display: flex;">
+            <div style="width: 60px;">语速: </div>
+            <input type="number" id="speed" placeholder="输入语速">
+          </div>
+          <div style="display: flex;">
+            <div style="width: 60px;">音调: </div>
+            <input type="number" id="pitch" placeholder="输入音调">
+          </div>
+          <div style="display: flex;">
+            <div style="width: 60px;">音量: </div>
+            <input type="number" id="volume" placeholder="输入音量">
+          </div>
+        </div>
+        <div id="nonStreamInput" style="margin-top: 16px;" class="input-group">
+          <textarea id="testText" placeholder="输入测试文本"></textarea>
+        </div>
+        <button id="sendTextBtn" onclick="sendText()">发送文本 sendText</button>
+
+        <div id="streamInput" style="margin-top: 16px;" class="stream-inputs">
+          <button onclick="addStreamInput()">添加流式消息</button>
+        </div>
+        <button id="sendCustomStreamBtn" onclick="sendCustomStream()">发送自定义流式文本</button>
+        <button onclick="sendStreamTextTest()">一键测试流式文本</button>
+        <button onclick="sendStreamTextByLlm()">一键测试llm切句后流式文本</button>
+
+        <button style="margin-top: 16px;" onclick="interruptStream()">流式打断 interruptStream</button>
+        <button onclick="interrupt()">打断 interrupt</button>
+        <button onclick="mute()">静音 mute</button>
+        <button onclick="closeRoom()">关闭房间 closeRoom</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    let instanceTTSA;
+    let streamInputCount = 0;
+    let muted = false;
+    let connected = false;
+    const localData = localStorage.getItem('sdk_test')
+
+    const MIN_SPLIT_LENGTH = 2 // 最小切分长度
+    const MAX_SPLIT_LENGTH = 20 // 最大切分长度
+    function splitSentence(text) {
+      if (!text) return []
+
+      // 定义中文标点（不需要空格）
+      const chinesePunctuations = new Set(['、', '，', '：', '；', '。', '？', '！', '…', '\n'])
+      // 定义英文标点（需要后跟空格）
+      const englishPunctuations = new Set([',', ':', ';', '.', '?', '!'])
+
+      let count = 0
+      let firstValidPunctAfterMin = -1 // 最小长度后第一个有效标点位置
+      let forceBreakIndex = -1 // 强制切分位置
+      let i = 0
+      const n = text.length
+
+      // 扫描文本直到达到最大长度或文本结束
+      while (i < n && count < MAX_SPLIT_LENGTH) {
+        const char = text[i]
+
+        // 处理汉字
+        if (char >= '\u4e00' && char <= '\u9fff') {
+          count++
+          // 记录达到最大长度时的位置
+          if (count === MAX_SPLIT_LENGTH) {
+            forceBreakIndex = i + 1 // 在汉字后切分
+          }
+          i++
+        }
+        // 处理数字序列
+        else if (char >= '0' && char <= '9') {
+          count++
+          if (count === MAX_SPLIT_LENGTH) {
+            forceBreakIndex = i + 1
+          }
+          i++
+        }
+        // 处理英文字母序列（单词）
+        else if ((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')) {
+          // 扫描整个英文单词
+          const start = i
+          i++
+          while (i < n && ((text[i] >= 'a' && text[i] <= 'z') || (text[i] >= 'A' && text[i] <= 'Z'))) {
+            i++
+          }
+          count++
+          if (count === MAX_SPLIT_LENGTH) {
+            forceBreakIndex = i // 在单词后切分
+          }
+        }
+        // 处理标点符号
+        else {
+          if (chinesePunctuations.has(char)) {
+            // 达到最小长度后记录第一个有效中文标点
+            if (count >= MIN_SPLIT_LENGTH && firstValidPunctAfterMin === -1) {
+              firstValidPunctAfterMin = i
+            }
+            i++
+          } else if (englishPunctuations.has(char)) {
+            // 英文标点：检查后跟空格或结束
+            if (i + 1 >= n || text[i + 1] === ' ') {
+              // 达到最小长度后记录第一个有效英文标点
+              if (count >= MIN_SPLIT_LENGTH && firstValidPunctAfterMin === -1) {
+                firstValidPunctAfterMin = i
+              }
+            }
+            i++
+          } else {
+            // 其他字符（如空格、符号等），跳过
+            i++
+          }
+        }
+      }
+
+      // 优先使用靠近句首的标点位置切分
+      if (firstValidPunctAfterMin !== -1) {
+        const splitIndex = firstValidPunctAfterMin + 1
+        let start2 = splitIndex
+        if (start2 < n) {
+          return [text.substring(0, splitIndex), text.substring(start2)]
+        }
+      }
+
+      // 使用强制切分位置
+      if (forceBreakIndex !== -1) {
+        let start2 = forceBreakIndex
+        if (start2 < n) {
+          return [text.substring(0, forceBreakIndex), text.substring(start2)]
+        }
+      }
+
+      // 无法切分的情况
+      return [text]
+    }
+
+    if (localData) {
+      try {
+        const { server_url, username, app_id, app_secret, tag } = JSON.parse(localData)
+        document.getElementById('server_url').value = server_url
+        document.getElementById('username').value = username
+        document.getElementById('app_id').value = app_id
+        document.getElementById('app_secret').value = app_secret
+        document.getElementById('tag').value = tag
+
+      } catch (error) {
+      }
+    }
+
+    function addStreamInput() {
+      streamInputCount++;
+      const streamInputContainer = document.getElementById('streamInput');
+      const newStreamInput = document.createElement('div');
+      newStreamInput.style.display = 'flex';
+      newStreamInput.style.gap = '10px';
+      newStreamInput.innerHTML = `
+        <input type="text" placeholder="消息内容" id="streamText${streamInputCount}">
+        <input type="number" placeholder="时间间隔(毫秒)" id="streamDelay${streamInputCount}" min="0" style="width: 100px;">
+      `;
+      streamInputContainer.appendChild(newStreamInput);
+    }
+
+    function connect() {
+      const server_url = document.getElementById('server_url').value;
+      const username = document.getElementById('username').value;
+      const app_id = document.getElementById('app_id').value;
+      const app_secret = document.getElementById('app_secret').value;
+      const tag = document.getElementById('tag').value;
+      const need_refresh = document.getElementById('need_refresh').checked;
+      if (!username || !app_id || !app_secret || !server_url) {
+        alert("服务地址,用户名，id,secret必填！");
+        return;
+      }
+
+      localStorage.setItem('sdk_test', JSON.stringify({ server_url, username, app_id, app_secret, tag }))
+
+      instanceTTSA = new XmovTTSA({
+        container: '#ttsa',
+        server: server_url,
+        width: 960,
+        height: 600,
+        account: {
+          username: username,
+          app_id: app_id,
+          app_secret: app_secret,
+        },
+        widgetCallback: widgetCallback,
+        disconnectCallback: disconnectCallback,
+        config: {
+          auto_action: false,
+          fps: 24,
+          max_bitrate: 2,
+          offline: false,
+          tag: tag,
+        },
+        videoOptions: {
+          muted: false
+        }
+      });
+
+      instanceTTSA.setup(need_refresh).then(() => {
+        document.getElementById('actionButtons').style.display = 'flex'
+        connected = true
+      })
+    }
+
+    function play() {
+      const el = document.querySelector('#ttsa video')
+      el.play()
+    }
+
+    function sendText() {
+      const ssml = document.querySelector('#testText').value
+      instanceTTSA.sendText(ssml, getParams());
+    }
+
+    function getParams() {
+      const speed = document.getElementById('speed').value;
+      const pitch = document.getElementById('pitch').value;
+      const volume = document.getElementById('volume').value;
+      const params = {}
+
+      if (speed) {
+        params.speed = Number(speed)
+      }
+      if (pitch) {
+        params.pitch = Number(pitch)
+      }
+      if (volume) {
+        params.volume = Number(volume)
+      }
+      return params
+    }
+
+
+
+    function sendStreamTextByLlm() {
+      const params = getParams()
+      let textTempStr = ''
+      const llmCallback = (text, isLast = false) => {
+        textTempStr += text
+        if (isLast) {
+          console.log('[llm finish:::]', textTempStr)
+          instanceTTSA.sendStreamText(textTempStr, { is_stream_end: true, ...params })
+          textTempStr = ''
+        }
+        const arr = splitSentence(textTempStr)
+        if (arr.length > 1) {
+          console.log('[get sentence:::]', arr[0])
+          textTempStr = arr[1]
+          instanceTTSA.sendStreamText(arr[0], params);
+        }
+      }
+      // 以下是模拟大模型调用llmCallback
+      const fakeLlmData = ['秦', '始', '皇', '，全', '名', '嬴', '政', '，是', '中国', '历史', '上', '首', '位', '统一', '六', '国', '的', '皇', '帝', '，也是', '中国', '历史', '上', '第一', '位', '使用', '“', '皇', '帝', '”', '称', '号', '的', '君', '主', '。他', '在', '公', '元', '前', '259', '年', '出生', '于', '赵', '国', '邯', '郸', '，', '去', '世', '于', '公', '元', '前', '210', '年', '。他', '作为', '秦', '国', '国', '王', '于', '公', '元', '前', '246', '年', '继', '位', '，并', '在', '公', '元', '前', '221', '年', '统一', '中国', '，', '建立', '了', '中国', '历史', '上', '第', '一个', '中央', '集', '权', '的', '统一', '封', '建', '王', '朝', '——', '秦', '朝']
+      let index = 0
+      const intervalId = setInterval(() => {
+        const text = fakeLlmData[index]
+        if (index >= fakeLlmData.length) {
+          index = 0
+          llmCallback('', true)
+          clearInterval(intervalId)
+        } else {
+          llmCallback(text)
+          index++
+        }
+      }, 16)
+    }
+
+    function sendStreamTextTest() {
+      let count = 0
+      const textList = [
+        '李加亮，魔珐科技的闪耀之星，一位才华横溢、充满激情的技术专家。他对人工智能和计算机图形学的深刻理解，推动着公司在虚拟人领域的不断创新。',
+        '李加亮不仅具备卓越的技术能力，更是一位富有远见的领导者。他善于激发团队的创造力，带领团队攻克一个个技术难关，实现了一系列令人瞩目的成就。他对细节的执着追求和对完美的渴望，确保了每一个项目都达到业界领先水平。',
+        '李加亮对技术的热爱和对创新的执着，使他成为魔珐科技不可或缺的中坚力量。他的远见卓识和领导才能，必将带领公司在虚拟人领域创造更加辉煌的未来。',
+        '除了在技术领域的杰出贡献，李加亮还积极参与行业交流与合作，不断拓展自己的视野。他乐于分享自己的经验和见解，为行业的发展贡献自己的力量。他的专业精神和人格魅力赢得了业内同行的广泛赞誉。',
+        '李加亮的未来充满无限可能。他的才华、激情和领导力，将继续推动魔珐科技在虚拟人领域不断突破，创造更加令人惊叹的成就。'
+      ]
+      const params = getParams()
+      const intervalId = setInterval(() => {
+        const ssml = textList[count++]
+        if (count >= textList.length) {
+          count = 0
+          instanceTTSA.sendStreamText(ssml, { is_stream_end: true, ...params });
+          clearInterval(intervalId);
+        } else {
+          instanceTTSA.sendStreamText(ssml, params);
+        }
+      }, 600)
+    }
+
+    function sendCustomStream() {
+      let count = 0;
+      const messages = [];
+      while (document.getElementById(`streamText${count + 1}`)) {
+        const text = document.getElementById(`streamText${count + 1}`).value;
+        const delay = parseInt(document.getElementById(`streamDelay${count + 1}`).value) || 0;
+        messages.push({ text, delay });
+        count++;
+      }
+
+      let index = 0;
+
+      const sendNextMessage = () => {
+        if (index >= messages.length) return;
+        const { text, delay } = messages[index];
+        const isLastMessage = index === messages.length - 1;
+
+        console.log('Sending:', text, 'with delay:', delay);
+
+        instanceTTSA.sendStreamText(text, { is_stream_end: isLastMessage, ...getParams() });
+
+        if (isLastMessage) {
+          console.log('Last message sent.');
+        } else {
+          index++;
+          setTimeout(sendNextMessage, delay);
+        }
+      };
+
+      sendNextMessage();
+    }
+
+    function roomConfig() {
+      instanceTTSA.roomConfig({ fps: 24, max_bitrate: 2 });
+    }
+
+    function interrupt() {
+      instanceTTSA.interrupt();
+    }
+
+    function interruptStream() {
+      instanceTTSA.interruptStream();
+    }
+
+    function mute() {
+      muted = !muted;
+      instanceTTSA.mute(muted);
+    }
+
+    function widgetCallback(e) {
+      const { type, data } = e.callback_info || {}
+      console.log(type, data);
+    }
+
+    async function closeRoom() {
+      connected = false
+      await instanceTTSA.closeRoom();
+      document.getElementById('actionButtons').style.display = 'none'
+    }
+
+    async function  disconnectCallback() {
+      console.log('disconnectCallback')
+      if (connected) {
+        console.log('视频流已中断')
+        await closeRoom()
+        // 断线重连
+        // connect()
+      }
+    }
+  </script>
+</body>
+
+</html>
